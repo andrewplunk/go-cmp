@@ -108,16 +108,7 @@ type state struct {
 	result  diff.Result // The current result of comparison
 	curPath Path        // The current path in the value tree
 
-	// dsCheck tracks the state needed to periodically perform checks that
-	// user provided func(T, T) bool functions are symmetric and deterministic.
-	//
-	// Checks occur every Nth function call, where N is a triangular number:
-	//	0 1 3 6 10 15 21 28 36 45 55 66 78 91 105 120 136 153 171 190 ...
-	// See https://en.wikipedia.org/wiki/Triangular_number
-	//
-	// This sequence ensures that the cost of checks drops significantly as
-	// the number of functions calls grows larger.
-	dsCheck struct{ curr, next int }
+	dynChecker dynChecker // Randomly triggers checks for option correctness
 
 	// These fields, once set by processOption, will not change.
 	exporters map[reflect.Type]bool // Set of structs with unexported field visibility
@@ -329,7 +320,7 @@ func (s *state) applyFilters(vx, vy reflect.Value, t reflect.Type, opt option) b
 		}
 	}
 	for _, f := range opt.valueFilters {
-		if !t.AssignableTo(f.in) || !s.callFunc(f.fnc, vx, vy) {
+		if !t.AssignableTo(f.in) || !s.callTTBFunc(f.fnc, vx, vy) {
 			return false
 		}
 	}
@@ -339,14 +330,14 @@ func (s *state) applyFilters(vx, vy reflect.Value, t reflect.Type, opt option) b
 func (s *state) applyOption(vx, vy reflect.Value, t reflect.Type, opt option) {
 	switch op := opt.op.(type) {
 	case *transformer:
-		vx = op.fnc.Call([]reflect.Value{vx})[0]
-		vy = op.fnc.Call([]reflect.Value{vy})[0]
+		vx = s.callTRFunc(op.fnc, vx)
+		vy = s.callTRFunc(op.fnc, vy)
 		s.curPath.push(&transform{pathStep{op.fnc.Type().Out(0)}, op})
 		defer s.curPath.pop()
 		s.compareAny(vx, vy)
 		return
 	case *comparer:
-		eq := s.callFunc(op.fnc, vx, vy)
+		eq := s.callTTBFunc(op.fnc, vx, vy)
 		s.report(eq, vx, vy)
 		return
 	}
@@ -360,25 +351,30 @@ func (s *state) tryMethod(vx, vy reflect.Value, t reflect.Type) bool {
 		return false
 	}
 
-	eq := s.callFunc(m.Func, vx, vy)
+	eq := s.callTTBFunc(m.Func, vx, vy)
 	s.report(eq, vx, vy)
 	return true
 }
 
-func (s *state) callFunc(f, x, y reflect.Value) bool {
-	got := f.Call([]reflect.Value{x, y})[0].Bool()
-	if s.dsCheck.curr == s.dsCheck.next {
-		// Swapping the input arguments is sufficient to check that
-		// f is symmetric and deterministic.
-		want := f.Call([]reflect.Value{y, x})[0].Bool()
-		if got != want {
-			fn := getFuncName(f.Pointer())
-			panic(fmt.Sprintf("non-deterministic or non-symmetric function detected: %s", fn))
-		}
-		s.dsCheck.curr = 0
-		s.dsCheck.next++
+func (s *state) callTRFunc(f, v reflect.Value) reflect.Value {
+	// TODO: Add dynamic checks that input is not mutated and
+	// that the output is deterministic.
+	return f.Call([]reflect.Value{v})[0]
+}
+
+func (s *state) callTTBFunc(f, x, y reflect.Value) bool {
+	if !s.dynChecker.Next() {
+		return f.Call([]reflect.Value{x, y})[0].Bool()
 	}
-	s.dsCheck.curr++
+
+	// Swapping the input arguments is sufficient to check that
+	// f is symmetric and deterministic.
+	got := f.Call([]reflect.Value{y, x})[0].Bool()
+	want := f.Call([]reflect.Value{y, x})[0].Bool()
+	if got != want {
+		fn := getFuncName(f.Pointer())
+		panic(fmt.Sprintf("non-deterministic or non-symmetric function detected: %s", fn))
+	}
 	return got
 }
 
@@ -506,6 +502,29 @@ func (s *state) report(eq bool, vx, vy reflect.Value) {
 	if s.reporter != nil {
 		s.reporter.Report(vx, vy, eq, s.curPath)
 	}
+}
+
+// dynChecker tracks the state needed to periodically perform checks that
+// user provided functions are symmetric and deterministic.
+// The zero value is safe for immediate use.
+type dynChecker struct{ curr, next int }
+
+// Next increments the state and reports whether a check should be performed.
+//
+// Checks occur every Nth function call, where N is a triangular number:
+//	0 1 3 6 10 15 21 28 36 45 55 66 78 91 105 120 136 153 171 190 ...
+// See https://en.wikipedia.org/wiki/Triangular_number
+//
+// This sequence ensures that the cost of checks drops significantly as
+// the number of functions calls grows larger.
+func (dc *dynChecker) Next() bool {
+	ok := dc.curr == dc.next
+	if ok {
+		dc.curr = 0
+		dc.next++
+	}
+	dc.curr++
+	return ok
 }
 
 // makeAddressable returns a value that is always addressable.
