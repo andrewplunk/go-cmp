@@ -9,7 +9,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/google/go-cmp/cmp/internal/value"
+	"github.com/andrewplunk/go-cmp/cmp/internal/value"
 )
 
 type defaultReporter struct {
@@ -38,7 +38,18 @@ func (r *defaultReporter) Report(x, y reflect.Value, eq bool, p Path) {
 			sx = value.Format(x, false)
 			sy = value.Format(y, false)
 		}
-		s := fmt.Sprintf("%#v:\n\t-: %s\n\t+: %s\n", p, sx, sy)
+
+		// Add type information if available.
+		var tx, ty string
+		if x.IsValid() {
+			tx = fmt.Sprintf("%T:", x.Interface())
+		}
+
+		if y.IsValid() {
+			ty = fmt.Sprintf("%T:", y.Interface())
+		}
+
+		s := fmt.Sprintf("%#v:\n\t-: %s%s\n\t+: %s%s\n", p, tx, sx, ty, sy)
 		r.diffs = append(r.diffs, s)
 		r.nbytes += len(s)
 		r.nlines += strings.Count(s, "\n")

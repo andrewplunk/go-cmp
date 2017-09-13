@@ -30,8 +30,8 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/google/go-cmp/cmp/internal/diff"
-	"github.com/google/go-cmp/cmp/internal/value"
+	"github.com/andrewplunk/go-cmp/cmp/internal/diff"
+	"github.com/andrewplunk/go-cmp/cmp/internal/value"
 )
 
 // BUG: Maps with keys containing NaN values cannot be properly compared due to
